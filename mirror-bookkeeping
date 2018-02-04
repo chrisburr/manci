@@ -1,0 +1,374 @@
+#!/usr/bin/env python
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
+import argparse
+from collections import defaultdict
+from datetime import datetime
+from itertools import izip_longest, imap
+import json
+import os
+from os.path import basename, join
+import sys
+
+from LHCbDIRAC.DataManagementSystem.Client.DMScript import Script
+# Do the gymnastics to set up DIRAC
+argv, sys.argv = sys.argv, []  # NOQA
+Script.parseCommandLine()  # NOQA
+os.environ['XrdSecPROTOCOL'] = 'gsi,unix,krb5'  # NOQA
+sys.argv = argv  # NOQA
+from DIRAC.DataManagementSystem.Client.DataManager import DataManager
+from DIRAC.Resources.Storage.StorageElement import StorageElement
+from LHCbDIRAC.BookkeepingSystem.Client.BKQuery import BKQuery
+from LHCbDIRAC.BookkeepingSystem.Client.BookkeepingClient import BookkeepingClient
+from XRootD.client import CopyProcess, FileSystem, flags, URL
+from XRootD.client.utils import CopyProgressHandler
+from tqdm import tqdm
+
+
+class ChecksumMismatchError(Exception):
+    pass
+
+
+class Replica(object):
+    def __init__(self, lfn, se, pfn=None, error=None, banned=False):
+        self._lfn = lfn
+        self._se = se
+        self._pfn = pfn
+        self._error = error
+        self._banned = banned
+
+    def __eq__(self, other):
+        if isinstance(other, self.__class__):
+            return self._lfn == other._lfn and self._se == other._se
+        return False
+
+    def __str__(self):
+        if self.available:
+            return '{se}: {pfn}'.format(se=self._se, pfn=self._pfn)
+        elif self._banned:
+            return '{se}: Replica is banned'.format(se=self._se)
+        elif self._error:
+            return '{se}: {error}'.format(se=self._se, error=self._error)
+        else:
+            return '{se}: Unknown error ({error})'.format(se=self._se, error=repr(self))
+
+    @property
+    def available(self):
+        return not self._banned and self._pfn is not None
+
+    @property
+    def lfn(self):
+        return self._lfn
+
+    @property
+    def pfn(self):
+        return MyURL(self._pfn)
+
+    @property
+    def storage_element(self):
+        return self._se
+
+
+class MyURL(object):
+    _filesystems = {}
+
+    def __init__(self, path):
+        self._path = path
+        self._url = URL(path)
+        assert self._url.is_valid(), path
+
+    def __str__(self):
+        return self._path
+
+    def __repr__(self):
+        return '{name}({path})'.format(name=self.__class__, path=self._path)
+
+    @property
+    def _fs(self):
+        host = self._url.protocol + '://' + self._url.hostid
+        if host not in self._filesystems:
+            self._filesystems[host] = FileSystem(host)
+        return self._filesystems[host]
+
+    @property
+    def exists(self):
+        status, response = self._fs.stat(self._url.path_with_params)
+        if status.ok:
+            return True
+        elif status.errno == 3011:
+            return False
+        else:
+            raise ValueError('Unrecognised error status: '+repr(status))
+
+    def checksum(self, checksum_type=None):
+        status, checksum = self._fs.query(flags.QueryCode.CHECKSUM, self._url.path_with_params)
+        if status.ok:
+            reponse_checksum_type, checksum = checksum.strip('\x00').split(' ')
+            if checksum_type is not None and reponse_checksum_type != checksum_type:
+                raise NotImplementedError(reponse_checksum_type, checksum_type)
+            return checksum_type, int(checksum, base=16)
+        elif status.errno == 3011:
+            raise IOError(status.message)
+        else:
+            raise ValueError('Unrecognised error status: '+repr(status))
+
+    def validate_checksum(self, other):
+        if not self.exists:
+            raise IOError(str(self) + "doesn't exist")
+        if not other.exists:
+            raise IOError(str(other) + "doesn't exist")
+        checksum_type, self_checksum = self.checksum()
+        _, other_checksum = other.checksum(checksum_type)
+        if self_checksum != other_checksum:
+            raise ChecksumMismatchError(self, self_checksum, other, other_checksum)
+
+    def join(self, *args):
+        return self.__class__(join(self._path, *args))
+
+
+class MyCopyProgressHandler(CopyProgressHandler):
+    def __init__(self, total_jobs):
+        self._jobs_pbar = tqdm(total=total_jobs)
+        self._current_id = None
+        self._current_pbar = None
+
+    def begin(self, job_id, total, source, target):
+        pass
+
+    def end(self, job_id, results):
+        self._current_id = None
+        if self._current_pbar is not None:
+            self._current_pbar.close()
+            self._current_pbar = None
+        self._jobs_pbar.update()
+
+    def update(self, job_id, processed, total):
+        try:
+            if self._current_id is None:
+                self._current_id = job_id
+            elif self._current_id != job_id:
+                print('Progress bar logic failure')
+            elif self._current_pbar is None:
+                # Create this the second loop to workaround for a race in tqdm
+                self._current_pbar = tqdm(total=total, unit='B', unit_scale=True, leave=False)
+            else:
+                self._current_pbar.update(processed - self._current_pbar.n)
+        except Exception as e:
+            print('Exception in update', e)
+
+    def should_cancel(self, job_id):
+        print('Called MyCopyProgressHandler.should_cancel', job_id)
+        return False
+
+
+class MyCopyProcess(object):
+    def __init__(self):
+        self._jobs = {}
+
+    def __bool__(self):
+        return bool(self._jobs)
+
+    def __len__(self):
+        return len(self._jobs)
+
+    def __contains__(self, lfn):
+        return lfn in self._jobs
+
+    def add_job(self, replica, destination):
+        assert isinstance(replica, Replica)
+        self._jobs[replica] = destination
+
+    def copy(self):
+        print('Copying', len(self._jobs), 'files')
+        replicas = sorted(self._jobs, key=lambda replica: replica.lfn)
+
+        process = CopyProcess()
+        for replica in replicas:
+            process.add_job(str(replica.pfn), str(self._jobs[replica]))
+
+        status = process.prepare()
+        assert status.ok, status
+
+        status, results = process.run(MyCopyProgressHandler(len(self._jobs)))
+        assert status.ok, (status, results)
+        return {replica: result['status'].ok for replica, result in zip(replicas, results)}
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--bk-path', required=True)
+    parser.add_argument('--loookup-replicas', action='store_true')
+    parser.add_argument('--mirror-to')
+    parser.add_argument('--output-fn')
+
+    args = parser.parse_args()
+
+    files = lookup_files_from_query(args.bk_path)
+
+    if args.loookup_replicas:
+        loookup_replicas(files)
+
+    if args.output_fn:
+        with open(args.output_fn, 'wt') as fp:
+            json.dump({
+                lfn: {k: (v.isoformat() if isinstance(v, datetime) else v)
+                      for k, v in metadata.items()}
+                for lfn, metadata in files.items()
+            }, fp)
+
+    if args.mirror_to:
+        assert args.loookup_replicas, '--mirror-to requires --loookup-replicas'
+        mirror_files(files, args.mirror_to)
+
+
+def grouper(iterable, n, fillvalue=None):
+    "Collect data into fixed-length chunks or blocks"
+    # grouper('ABCDEFG', 3) --> ABC DEF G
+    # grouper('ABCDEFG', 3, 'x') --> ABC DEF Gxx
+    args = [iter(iterable)] * n
+    return imap(lambda x: list(filter(bool, x)),
+                izip_longest(fillvalue=fillvalue, *args))
+
+
+def lookup_files_from_query(bk_path):
+    bkQuery = BKQuery(bkQuery=bk_path, visible='Yes')
+    bkClient = BookkeepingClient()
+
+    files = {}
+    useFilesWithMetadata = False
+    if useFilesWithMetadata:
+        res = bkClient.getFilesWithMetadata(bkQuery.getQueryDict())
+        if not res['OK']:
+            print('ERROR getting the files', res['Message'], file=sys.stderr)
+            sys.exit(1)
+        parameters = res['Value']['ParameterNames']
+        for record in res['Value']['Records']:
+            dd = dict(zip(parameters, record))
+            lfn = dd.pop('FileName')
+            files[lfn] = dd
+
+    else:
+        lfns = bkQuery.getLFNs(printSEUsage=False, printOutput=False)
+
+        for lfnChunk in grouper(lfns, 1000):
+            res = bkClient.getFileMetadata(lfnChunk)
+            if not res['OK']:
+                print('ERROR: failed to get metadata:', res['Message'], file=sys.stderr)
+                sys.exit(1)
+            files.update(res['Value']['Successful'])
+
+    if not files:
+        print('No files found for BK query')
+        sys.exit(0)
+
+    print(len(files), 'files found')
+
+    return files
+
+
+def loookup_replicas(files, protocol=['xroot', 'root']):
+    dm = DataManager()
+    bk = BookkeepingClient()
+
+    res = dm.getReplicas(list(files), getUrl=False)
+    replicas = res.get('Value', {}).get('Successful', {})
+    seList = sorted(set(se for lfn in files for se in replicas.get(lfn, {})))
+    banned_SE_list = [se for se in seList if 'CNAF' in se]
+    print('Found SE list of', seList)
+
+    for lfn in files:
+        files[lfn]['Replicas'] = []
+
+    # Check if files are MDF
+    bkRes = bk.getFileTypeVersion(list(files))
+    assert not set(lfn for lfn, fileType in bkRes.get('Value', {}).iteritems() if fileType == 'MDF')
+    for se in seList:
+        # TODO Check if SEs are available
+        lfns = [lfn for lfn in files if se in replicas.get(lfn, [])]
+
+        if se in banned_SE_list:
+            print('Skipping banned SE', se)
+            for lfn in lfns:
+                files[lfn]['Replicas'].append(Replica(lfn, se, banned=True))
+            continue
+        else:
+            print('Looking up replicas for', len(lfns), 'files at', se)
+
+        if lfns:
+            res = StorageElement(se).getURL(lfns, protocol=protocol)
+            if res['OK']:
+                for lfn, pfn in res['Value']['Successful'].items():
+                    files[lfn]['Replicas'].append(Replica(lfn, se, pfn=pfn))
+                for lfn in res['Value']['Failed']:
+                    files[lfn]['Replicas'].append(Replica(lfn, se, error=res))
+            else:
+                print('LFN -> PFN lookup failed for', se, 'with error:', res['Message'])
+                for lfn in lfns:
+                    files[lfn]['Replicas'].append(Replica(lfn, se, error=res['Message']))
+
+
+def mirror_files(files, destination_dir, max_retries=1):
+    assert destination_dir.startswith('root://'), destination_dir
+    assert len(files) == len(set(basename(lfn) for lfn in files)), 'Duplicate filenames found in input LFNs'
+
+    n_tries = defaultdict(int)
+    destination_dir = MyURL(destination_dir)
+
+    # Validate checksums of existing files
+    for lfn, metadata in files.items():
+        destination = destination_dir.join(basename(lfn))
+        if destination.exists:
+            validated = False
+            for replica in metadata['Replicas']:
+                if replica.available:
+                    destination.validate_checksum(replica.pfn)
+                    validated = True
+                    break
+            if not validated:
+                print('Failed to validate checksum for', lfn, 'as no replicas are available')
+
+    # Copy files which don't exist, repeating as needed
+    keep_going = True
+    while keep_going:
+        copy_process = MyCopyProcess()
+        for lfn, metadata in files.items():
+            destination = destination_dir.join(basename(lfn))
+            if not destination.exists:
+                for replica in metadata['Replicas']:
+                    if not replica.available:
+                        continue
+                    if n_tries[replica] <= max_retries:
+                        copy_process.add_job(replica, destination)
+                        n_tries[replica] += 1
+                        break
+
+        copy_result = copy_process.copy()
+        for replica, success in copy_result.items():
+            destination = destination_dir.join(basename(replica.lfn))
+            if success:
+                destination.validate_checksum(replica.pfn)
+            else:
+                assert not destination.exists, (replica, destination)
+        keep_going = copy_process and not all(copy_result.values())
+
+    # Print the results
+    n_successful = 0
+    n_failed = 0
+    for lfn, metadata in files.items():
+        destination = destination_dir.join(basename(lfn))
+        if destination.exists:
+            n_successful += 1
+        else:
+            n_failed += 1
+            print('Failed to copy', lfn, ' replicas are:')
+            for replica in metadata['Replicas']:
+                print(' >', replica)
+            print()
+    print(n_successful, 'out of', len(files), 'files copied successfully')
+
+
+if __name__ == '__main__':
+    # TODO Check for grid proxy
+    parse_args()
