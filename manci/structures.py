@@ -4,8 +4,35 @@ from __future__ import print_function
 
 
 __all__ = [
+    'DiracFile',
     'Replica',
 ]
+
+
+class DiracFile(object):
+    def __init__(self, lfn, replicas=None):
+        self._lfn = lfn
+        self.replicas = replicas or []
+
+    def __eq__(self, other):
+        return self.lfn == other.lfn
+
+    def __str__(self):
+        return self._lfn
+
+    @property
+    def lfn(self):
+        return self._lfn
+
+    @property
+    def replicas(self):
+        return self._replicas
+
+    @replicas.setter
+    def replicas(self, replicas):
+        assert isinstance(replicas, list)
+        assert all(isinstance(r, Replica) for r in replicas)
+        self._replicas = replicas
 
 
 class Replica(object):
