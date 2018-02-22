@@ -8,10 +8,12 @@ utils.initalise_dirac()  # NOQA
 from . import data_management
 from . import exceptions
 from . import XRootD
+from .version import __version__
 
 
 __all__ = [
     'data_management',
     'exceptions',
     'XRootD',
+    '__version__',
 ]

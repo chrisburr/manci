@@ -22,7 +22,10 @@ def initalise_dirac():
             print('WARNING: urban_baracle should be imported before', module)
             print('Access to DIRAC may not function correctly')
 
-    from LHCbDIRAC.DataManagementSystem.Client.DMScript import Script  # NOQA
+    try:
+        from LHCbDIRAC.DataManagementSystem.Client.DMScript import Script  # NOQA
+    except ImportError:
+        raise ImportError('Unable to import LHCbDIRAC, try using "lb-run LHCbDIRAC/prod python -m manci ..."')
 
     argv, sys.argv = sys.argv, []
     Script.parseCommandLine()
