@@ -43,7 +43,7 @@ def grouper(iterable, n, fillvalue=None):
                 izip_longest(fillvalue=fillvalue, *args))
 
 
-def dump(obj, filename):
+def dump(dirac_files, filename):
     """Dump an object to a file
 
     Dumps obj to filename, with automated detection for the filetype and
@@ -52,9 +52,8 @@ def dump(obj, filename):
     _, ext = splitext(filename)
 
     encoded_obj = {
-        lfn: {k: (v.isoformat() if isinstance(v, datetime) else v)
-              for k, v in metadata.items()}
-        for lfn, metadata in obj.items()
+        dirac_file.lfn: dirac_file.replicas
+        for dirac_file in dirac_files
     }
 
     if ext == '.json':

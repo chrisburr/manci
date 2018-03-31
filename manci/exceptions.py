@@ -10,3 +10,7 @@ __all__ = [
 
 class ChecksumMismatchError(Exception):
     pass
+
+
+class ChecksumNotSupportedError(Exception):
+    pass

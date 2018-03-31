@@ -2,6 +2,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import sys
+
 from .structures import DiracFile
 # from .utils import grouper
 
@@ -35,6 +37,29 @@ def from_bkquery(bk_paths):
 
         if not files:
             raise ValueError('No files found for BK query:', bk_path)
+
+    print(len(files), 'files found')
+
+    return files
+
+
+def from_prod_id(prod_ids, file_type):
+    if not isinstance(prod_ids, list):
+        prod_ids = [prod_ids]
+
+    from LHCbDIRAC.BookkeepingSystem.Client.BookkeepingClient import BookkeepingClient
+
+    files = []
+    for prod_id in prod_ids:
+        bk_client = BookkeepingClient()
+        result = bk_client.getProductionFiles(prod_id, file_type)
+        if not result['OK']:
+            print('ERROR getting the files', result['Message'], file=sys.stderr)
+            sys.exit(1)
+        files.extend([DiracFile(lfn) for lfn in result['Value']])
+
+        if not files:
+            raise ValueError('No files found for BK query:', prod_id)
 
     print(len(files), 'files found')
 

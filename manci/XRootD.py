@@ -7,7 +7,7 @@ from os.path import join
 from XRootD import client
 from tqdm import tqdm
 
-from .exceptions import ChecksumMismatchError
+from .exceptions import ChecksumMismatchError, ChecksumNotSupportedError
 
 
 __all__ = [
@@ -54,6 +54,8 @@ class URL(object):
             if checksum_type is not None and reponse_checksum_type != checksum_type:
                 raise NotImplementedError(reponse_checksum_type, checksum_type)
             return checksum_type, int(checksum, base=16)
+        elif status.errno == 3013:
+            raise ChecksumNotSupportedError(status.message)
         elif status.errno == 3011:
             raise IOError(status.message)
         else:
@@ -64,10 +66,14 @@ class URL(object):
             raise IOError(str(self) + "doesn't exist")
         if not other.exists:
             raise IOError(str(other) + "doesn't exist")
-        checksum_type, self_checksum = self.checksum()
-        _, other_checksum = other.checksum(checksum_type)
-        if self_checksum != other_checksum:
-            raise ChecksumMismatchError(self, self_checksum, other, other_checksum)
+        try:
+            checksum_type, self_checksum = self.checksum()
+            _, other_checksum = other.checksum(checksum_type)
+        except ChecksumNotSupportedError:
+            print('Checksum not supported, skipping')
+        else:
+            if self_checksum != other_checksum:
+                raise ChecksumMismatchError(self, self_checksum, other, other_checksum)
 
     def join(self, *args):
         return self.__class__(join(self._path, *args))

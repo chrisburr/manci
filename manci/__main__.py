@@ -19,7 +19,8 @@ from .utils import dump
 
 def add_input_data_subparser(parser):
     group = parser.add_mutually_exclusive_group(required=True)
-    # group.add_argument('--production-id', default=None)
+    group.add_argument('--production-id', default=None)
+    parser.add_argument('--file-type', required=False, default='ALL')
     group.add_argument('--bk-path', default=None)
     group.add_argument('--lfns', nargs='+', default=None)
     group.add_argument('--lfns-fn', default=None)
@@ -55,6 +56,9 @@ def _get_lfns_from_args(args):
     if args.bk_path:
         print('Getting LFNs from:', args.bk_path)
         return data_lookup.from_bkquery(args.bk_path)
+    if args.production_id:
+        print('Getting LFNs from:', args.production_id)
+        return data_lookup.from_prod_id(args.production_id, args.file_type)
 
     if args.lfns_fn:
         with open(args.lfns_fn, 'rt') as fp:

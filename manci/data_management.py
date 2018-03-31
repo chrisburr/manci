@@ -27,7 +27,8 @@ def loookup_replicas(files, protocol=['xroot', 'root']):
     res = dm.getReplicas([f.lfn for f in files], getUrl=False)
     replicas = res.get('Value', {}).get('Successful', {})
     seList = sorted(set(se for f in files for se in replicas.get(f.lfn, {})))
-    banned_SE_list = [se for se in seList if 'CNAF' in se]
+    # banned_SE_list = [se for se in seList if 'CNAF' in se]
+    banned_SE_list = []
     print('Found SE list of', seList)
 
     # Check if files are MDF
