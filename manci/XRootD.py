@@ -3,6 +3,8 @@ from __future__ import division
 from __future__ import print_function
 
 from os.path import join
+import time
+import zlib
 
 from XRootD import client
 from tqdm import tqdm
@@ -38,24 +40,43 @@ class URL(object):
         return self._filesystems[host]
 
     @property
-    def exists(self):
+    def exists(self, n_retries=0):
         status, response = self._fs.stat(self._url.path_with_params)
         if status.ok:
             return True
         elif status.errno == 3011:
             return False
+        elif status.code == 204:
+            print('Received authorisation failure, retrying in 60 seconds ('+str(n_retries)+' total)')
+            time.sleep(60)
+            return URL.exists.fget(self, n_retries+1)
         else:
             raise ValueError('Unrecognised error status: '+repr(status))
 
-    def checksum(self, checksum_type=None):
+    def checksum(self, checksum_type=None, n_retries=0):
         status, checksum = self._fs.query(client.flags.QueryCode.CHECKSUM, self._url.path_with_params)
         if status.ok:
             reponse_checksum_type, checksum = checksum.strip('\x00').split(' ')
             if checksum_type is not None and reponse_checksum_type != checksum_type:
                 raise NotImplementedError(reponse_checksum_type, checksum_type)
             return checksum_type, int(checksum, base=16)
+        elif status.code == 204:
+            print('Received authorisation failure, retrying in 60 seconds ('+str(n_retries)+' total)')
+            time.sleep(60)
+            return self.checksum(checksum_type, n_retries+1)
         elif status.errno == 3013:
-            raise ChecksumNotSupportedError(status.message)
+            print('Checksumming not supported remotely, running locally (might be slow):', self._path)
+            assert checksum_type == 'adler32' or checksum_type is None
+            with client.File() as f:
+                f.open(self._path, client.flags.OpenFlags.READ)
+                part_sum = 1
+                status, stat_info = f.stat()
+                assert status.ok, status
+                with tqdm(total=stat_info.size, unit='B', unit_scale=True, leave=False) as pbar:
+                    for chunk in f.readchunks(offset=0, chunksize=1024*1024*32):
+                        part_sum = zlib.adler32(chunk, part_sum)
+                        pbar.update(len(chunk))
+            return checksum_type, (part_sum & 0xFFFFFFFF)
         elif status.errno == 3011:
             raise IOError(status.message)
         else:
@@ -66,14 +87,11 @@ class URL(object):
             raise IOError(str(self) + "doesn't exist")
         if not other.exists:
             raise IOError(str(other) + "doesn't exist")
-        try:
-            checksum_type, self_checksum = self.checksum()
-            _, other_checksum = other.checksum(checksum_type)
-        except ChecksumNotSupportedError:
-            print('Checksum not supported, skipping')
-        else:
-            if self_checksum != other_checksum:
-                raise ChecksumMismatchError(self, self_checksum, other, other_checksum)
+        checksum_type, self_checksum = self.checksum()
+        _, other_checksum = other.checksum(checksum_type)
+        if self_checksum != other_checksum:
+            raise ChecksumMismatchError(self, hex(self_checksum), other, hex(other_checksum))
+            # print('raise ChecksumMismatchError(', self, hex(self_checksum), other, hex(other_checksum))
 
     def join(self, *args):
         return self.__class__(join(self._path, *args))

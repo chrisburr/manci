@@ -3,7 +3,9 @@ from __future__ import division
 from __future__ import print_function
 
 from collections import defaultdict
-from os.path import basename
+from os.path import basename, dirname
+
+from tqdm import tqdm
 
 from .structures import Replica
 
@@ -63,14 +65,19 @@ def mirror_files(files, destination_dir, max_retries=1):
     from manci import XRootD
 
     assert destination_dir.startswith('root://'), destination_dir
-    assert len(files) == len(set(basename(f.lfn) for f in files)), 'Duplicate filenames found in input LFNs'
+    # assert len(files) == len(set(basename(f.lfn) for f in files)), 'Duplicate filenames found in input LFNs'
+    if len(files) == len(set(basename(f.lfn) for f in files)):
+        destination_func = lambda file: destination_dir.join(basename(file.lfn))
+    else:
+        destination_func = lambda file: destination_dir.join(basename(dirname(file.lfn))+'_'+basename(file.lfn))
 
     n_tries = defaultdict(int)
     destination_dir = XRootD.URL(destination_dir)
 
     # Validate checksums of existing files
-    for file in files:
-        destination = destination_dir.join(basename(file.lfn))
+    print('Checking for existing files and validating checksums where necessary')
+    for file in tqdm(files):
+        destination = destination_func(file)
         if destination.exists:
             validated = False
             for replica in file.replicas:
@@ -86,7 +93,7 @@ def mirror_files(files, destination_dir, max_retries=1):
     while keep_going:
         copy_process = XRootD.CopyProcess()
         for file in files:
-            destination = destination_dir.join(basename(file.lfn))
+            destination = destination_func(file)
             if not destination.exists:
                 for replica in file.replicas:
                     if not replica.available:
@@ -98,7 +105,7 @@ def mirror_files(files, destination_dir, max_retries=1):
 
         copy_result = copy_process.copy()
         for replica, success in copy_result.items():
-            destination = destination_dir.join(basename(replica.lfn))
+            destination = destination_func(replica)
             if success:
                 destination.validate_checksum(replica.pfn)
             else:
@@ -109,7 +116,7 @@ def mirror_files(files, destination_dir, max_retries=1):
     n_successful = 0
     n_failed = 0
     for file in files:
-        destination = destination_dir.join(basename(file.lfn))
+        destination = destination_func(file)
         if destination.exists:
             n_successful += 1
         else:
