@@ -30,7 +30,7 @@ setup(name='manci',
       url='https://github.com/chrisburr/manci',
       download_url='https://github.com/chrisburr/manci/releases',
       license='BSD 3-clause',
-      install_requires=[],
+      install_requires=['tqdm'],
       classifiers=[
           'Development Status :: 2 - Pre-Alpha',
           'Intended Audience :: Developers',
