@@ -1,0 +1,38 @@
+language: python
+
+os:
+  - linux
+
+python:
+  - 2.7
+
+addons:
+  apt:
+    packages:
+      - python-setuptools
+
+install:
+  - pip install --upgrade pip
+  - pip install coveralls
+  - pip install pytest
+  - pip install pytest-cov
+  - pip install -e .
+
+script:
+  echo "No tests yet"
+  # py.test --cov=formulate --verbose --run-slow
+
+# after_success:
+#   coveralls
+
+notifications:
+
+deploy:
+  provider: pypi
+  user: chrisburr
+  password:
+    secure: jteniBISoSHp9HO2Mi/Ay32fdFes0S6Ae3JJU9F8lYZmVVYywadYUcMBMtBZ5dkblFkWJ5CIbfVIlWCn6b+RZAPLGv5FRGIzj2EAU778Kat0pXrC12xa0qzr9x7w2GHcpJq19hHnbAl163Q0QkTykIHTYzu+oUWSZ+20Abxk+XF34wlumsWnoEdMZARlSNontHDoR7pNnevIqe6xcN8fGtXGbdq9bCoBMImU/rN6nR+WRi1YPkUzpDNePupCChJyQefjURkbAxkTw7RzNY33Ckt/XddITbi59IDYIw345pfEFHo0QyYhVaz5AGXlVNt84SyR5K+4pD1yoGW5L2bVTEehg0boKrWkTSULb5Tvu8caohoBrp8MA8sN9K3cYJSGLqr1xXK8wPmFODQUcPdva40UfTX4cA9us/pDCNtQF4RqwyR0WgzImhYWMI+SBpTPS/klRwxVBH6rtXfVqvEzrVqQhA+euycgUcQFs+tsLx819DYWGaL+RkgQjFVVCyAV+PZ0haBrRwxyd744EMw6qex7J5My7u+PazuohkqKfRqzxSG6Ui7Hkegkdtpaoqvme+mS2wmx4rab40jiowNGQgZ2724ME5ySkHKJOjiV59i9Fh7IcxNOnCayS1cdRLh8BdjVukBmkGfYfICUi89hBH33FmTIBX0ffDUg2Qrblhc=
+  on:
+    tags: true
+    branch: master
+    python: 2.7
