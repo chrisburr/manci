@@ -9,7 +9,7 @@ import zlib
 from XRootD import client
 from tqdm import tqdm
 
-from .exceptions import ChecksumMismatchError, ChecksumNotSupportedError
+from .exceptions import ChecksumMismatchError
 
 
 __all__ = [
@@ -91,10 +91,13 @@ class URL(object):
         _, other_checksum = other.checksum(checksum_type)
         if self_checksum != other_checksum:
             raise ChecksumMismatchError(self, hex(self_checksum), other, hex(other_checksum))
-            # print('raise ChecksumMismatchError(', self, hex(self_checksum), other, hex(other_checksum))
 
     def join(self, *args):
         return self.__class__(join(self._path, *args))
+
+    def rm(self):
+        status, _ = self._fs.rm(self._url.path)
+        assert status.ok, status
 
 
 class CopyProgressHandler(client.utils.CopyProgressHandler):
@@ -153,14 +156,31 @@ class CopyProcess(object):
     def copy(self):
         print('Copying', len(self._jobs), 'files')
         replicas = sorted(self._jobs, key=lambda replica: replica.lfn)
+        replicas_remaining = replicas[:]
+        ret_val = {}
+        for i in range(3):
+            if not replicas_remaining:
+                break
 
-        process = client.CopyProcess()
-        for replica in replicas:
-            process.add_job(str(replica.pfn), str(self._jobs[replica]))
+            process = client.CopyProcess()
+            for replica in replicas_remaining:
+                process.add_job(str(replica.pfn), str(self._jobs[replica]))
 
-        status = process.prepare()
-        assert status.ok, status
+            status = process.prepare()
+            assert status.ok, status
 
-        status, results = process.run(CopyProgressHandler(len(self._jobs)))
-        assert status.ok, (status, results)
+            status, results = process.run(CopyProgressHandler(len(self._jobs)))
+
+            for i, (replica, result) in list(enumerate(zip(replicas_remaining, results)))[::-1]:
+                if result['status'].ok:
+                    ret_val[replica] = result['status'].ok
+                    del replicas_remaining[i]
+                elif result.errno == 3006 and 'File exists' in result.message:
+                    print('Encountered error when copying "' + self._jobs[replica] + '", deleting for retry...')
+                    self._jobs[replica].rm()
+                else:
+                    print('Unhanded error from XRootD', result)
+
+        if replicas_remaining:
+            raise IOError('Failed to copy some replcias ' + repr(replicas_remaining) + ' ' + repr(status))
         return {replica: result['status'].ok for replica, result in zip(replicas, results)}

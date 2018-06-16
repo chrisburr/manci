@@ -7,6 +7,7 @@ from os.path import basename, dirname
 
 from tqdm import tqdm
 
+from .exceptions import ChecksumMismatchError
 from .structures import Replica
 
 
@@ -82,7 +83,11 @@ def mirror_files(files, destination_dir, max_retries=1):
             validated = False
             for replica in file.replicas:
                 if replica.available:
-                    destination.validate_checksum(replica.pfn)
+                    try:
+                        destination.validate_checksum(replica.pfn)
+                    except ChecksumMismatchError:
+                        print('Checksum mismatch for', replica, 'deleting')
+                        destination.rm()
                     validated = True
                     break
             if not validated:
@@ -104,13 +109,19 @@ def mirror_files(files, destination_dir, max_retries=1):
                         break
 
         copy_result = copy_process.copy()
+        did_delete = False
         for replica, success in copy_result.items():
             destination = destination_func(replica)
             if success:
-                destination.validate_checksum(replica.pfn)
+                try:
+                    destination.validate_checksum(replica.pfn)
+                except ChecksumMismatchError:
+                    print('Checksum mismatch for', replica, 'deleting')
+                    destination.rm()
+                    did_delete = True
             else:
                 assert not destination.exists, (replica, destination)
-        keep_going = copy_process and not all(copy_result.values())
+        keep_going = did_delete or (copy_process and not all(copy_result.values()))
 
     # Print the results
     n_successful = 0
