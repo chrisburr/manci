@@ -183,4 +183,4 @@ class CopyProcess(object):
 
         if replicas_remaining:
             raise IOError('Failed to copy some replcias ' + repr(replicas_remaining) + ' ' + repr(status))
-        return {replica: result['status'].ok for replica, result in zip(replicas, results)}
+        return ret_val
