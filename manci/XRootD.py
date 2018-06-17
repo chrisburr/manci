@@ -175,7 +175,7 @@ class CopyProcess(object):
                 if result['status'].ok:
                     ret_val[replica] = result['status'].ok
                     del replicas_remaining[i]
-                elif result['errno'] == 3006 and 'File exists' in result['message']:
+                elif result['status'].errno == 3006 and 'File exists' in result['status'].message:
                     print('Encountered error when copying "' + self._jobs[replica] + '", deleting for retry...')
                     self._jobs[replica].rm()
                 else:
